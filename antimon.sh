@@ -95,7 +95,10 @@ parse_args() {
                 COMMAND=$1
                 ;;
             --agents|--state-dir|--snapshot|--lang)
-                [ "$#" -ge 2 ] && [ -n "$2" ] || { error "Missing value: $1"; return 2; }
+                if [ "$#" -lt 2 ] || [ -z "$2" ]; then
+                    error "Missing value: $1"
+                    return 2
+                fi
                 case "$1" in
                     --agents) AGENTS=$2 ;;
                     --state-dir) STATE_DIR=$2 ;;
@@ -141,7 +144,10 @@ parse_args() {
             [ "$ALL" -eq 1 ] || [ -n "$AGENTS" ] || { error 'Select --agents IDS or --all.'; return 2; }
             ;;
         restore)
-            [ "$ALL" -eq 0 ] && [ -z "$AGENTS" ] || { error 'restore uses a snapshot, not --agents/--all.'; return 2; }
+            if [ "$ALL" -ne 0 ] || [ -n "$AGENTS" ]; then
+                error 'restore uses a snapshot, not --agents/--all.'
+                return 2
+            fi
             ;;
     esac
     [ -z "$SNAPSHOT_ID" ] || [ "$COMMAND" = restore ] || { error '--snapshot requires restore.'; return 2; }
@@ -963,9 +969,12 @@ load_snapshot() {
     [ -n "$SNAPSHOT_ID" ] || SNAPSHOT_ID=$(latest_snapshot)
     case "$SNAPSHOT_ID" in ''|.*|*[!a-zA-Z0-9._-]*) error 'No valid disable snapshot found.'; return 2 ;; esac
     SNAPSHOT=$STATE_DIR/$SNAPSHOT_ID
-    [ -d "$SNAPSHOT" ] && [ ! -L "$SNAPSHOT" ] && [ -f "$SNAPSHOT/metadata" ] && [ ! -L "$SNAPSHOT/metadata" ] && [ -f "$SNAPSHOT/inventory" ] && [ ! -L "$SNAPSHOT/inventory" ] || {
-        error "Invalid snapshot: $SNAPSHOT"; return 2;
-    }
+    if [ ! -d "$SNAPSHOT" ] || [ -L "$SNAPSHOT" ] ||
+        [ ! -f "$SNAPSHOT/metadata" ] || [ -L "$SNAPSHOT/metadata" ] ||
+        [ ! -f "$SNAPSHOT/inventory" ] || [ -L "$SNAPSHOT/inventory" ]; then
+        error "Invalid snapshot: $SNAPSHOT"
+        return 2
+    fi
     snapshot_version=
     snapshot_operation=
     snapshot_init=
@@ -977,7 +986,10 @@ load_snapshot() {
             *) error 'Unknown snapshot metadata.'; return 2 ;;
         esac
     done < "$SNAPSHOT/metadata"
-    [ "$snapshot_version" = 1 ] && [ "$snapshot_init" = "$INIT_SYSTEM" ] || { error 'Snapshot version or init system does not match.'; return 2; }
+    if [ "$snapshot_version" != 1 ] || [ "$snapshot_init" != "$INIT_SYSTEM" ]; then
+        error 'Snapshot version or init system does not match.'
+        return 2
+    fi
     case "$snapshot_operation" in disable|remove) ;; *) error 'Invalid snapshot operation.'; return 2 ;; esac
     FINDINGS=$(cat "$SNAPSHOT/inventory") || return 1
     while IFS='|' read -r restore_kind _ restore_name _ _; do
@@ -1011,7 +1023,10 @@ apply() {
     if [ "$COMMAND" != restore ]; then
         confirmed_findings=$FINDINGS
         scan
-        [ "$FINDINGS" = "$confirmed_findings" ] && [ "$SCAN_ERRORS" -eq 0 ] || { error 'Inventory changed after confirmation. Review a fresh plan.'; return 2; }
+        if [ "$FINDINGS" != "$confirmed_findings" ] || [ "$SCAN_ERRORS" -ne 0 ]; then
+            error 'Inventory changed after confirmation. Review a fresh plan.'
+            return 2
+        fi
         write_snapshot || return 1
     fi
     apply_services

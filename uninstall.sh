@@ -12,7 +12,7 @@ fail() { printf '[!] %s\n' "$*" >&2; exit 1; }
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --prefix)
-            [ "$#" -ge 2 ] && [ -n "$2" ] || fail 'Missing --prefix value.'
+            if [ "$#" -lt 2 ] || [ -z "$2" ]; then fail 'Missing --prefix value.'; fi
             PREFIX=$2
             shift
             ;;

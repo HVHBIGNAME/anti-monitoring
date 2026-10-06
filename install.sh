@@ -42,7 +42,7 @@ parse_args() {
     while [ "$#" -gt 0 ]; do
         case "$1" in
             --prefix|--ref|--source)
-                [ "$#" -ge 2 ] && [ -n "$2" ] || fail "Missing value: $1"
+                if [ "$#" -lt 2 ] || [ -z "$2" ]; then fail "Missing value: $1"; fi
                 case "$1" in --prefix) PREFIX=$2 ;; --ref) REF=$2 ;; --source) SOURCE=$2 ;; esac
                 shift
                 ;;
@@ -119,7 +119,9 @@ digest() {
 }
 
 verify_payload() {
-    [ -s "$TEMP/antimon.sh" ] && [ -s "$TEMP/SHA256SUMS" ] || fail 'Empty download or missing checksum manifest.'
+    if [ ! -s "$TEMP/antimon.sh" ] || [ ! -s "$TEMP/SHA256SUMS" ]; then
+        fail 'Empty download or missing checksum manifest.'
+    fi
     expected=$(awk '$2 == "antimon.sh" {print $1}' "$TEMP/SHA256SUMS")
     [ "${#expected}" -eq 64 ] || fail 'Invalid checksum manifest.'
     case "$expected" in *[!0-9a-f]*) fail 'Invalid SHA-256 digest.' ;; esac

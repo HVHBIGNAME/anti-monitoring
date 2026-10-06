@@ -102,7 +102,9 @@ publishes logs and full image IDs as artifacts.
 The stateful suite runs under dash, Bash and BusyBox ash in CI. It covers native
 backend argument contracts and service-state transitions, plus failed commands,
 malformed input, package dependency expansion, snapshot validation, install integrity
-and idempotency. Contract tests are not a substitute for native OS tests.
+and idempotency. CI also smoke-tests the real network installer using the PR's
+exact commit SHA and a temporary installation prefix. Contract tests are not a
+substitute for native OS tests.
 
 ### Native package integration
 

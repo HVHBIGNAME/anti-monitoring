@@ -1,291 +1,172 @@
-#!/bin/bash
+#!/bin/sh
+# anti-monitoring installer; installs the command, never removes agents.
+# SPDX-License-Identifier: MIT
+set -uf
 
-set -e
+REPOSITORY=HVHBIGNAME/anti-monitoring
+REF=main
+PREFIX=
+SOURCE=
+QUIET=0
+RUN=0
+AUTO_DEPS=0
+TEMP=
+STAGED=
 
-# Цвета для вывода
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m'
+info() { [ "$QUIET" -eq 1 ] || printf '%s\n' "$*"; }
+fail() { printf '[!] %s\n' "$*" >&2; exit 1; }
+has() { command -v "$1" >/dev/null 2>&1; }
 
-SCRIPT_VERSION="1.0.0"
-HIDDEN_DIR="$HOME/.cache/system"
-SCRIPT_NAME=".antimon"
-SCRIPT_PATH="$HIDDEN_DIR/$SCRIPT_NAME"
-SCRIPT_URL="https://raw.githubusercontent.com/HVHBIGNAME/anti-monitoring/main/antimon.sh"
+usage() {
+    cat <<'USAGE'
+Install Anti-Monitoring (POSIX sh; Linux)
 
-# Параметры по умолчанию
-AUTO_INSTALL_DEPS=false
-SILENT=false
-FORCE=false
+  sh install.sh [--prefix /absolute/path] [--ref COMMIT_OR_TAG]
+  sh install.sh --source /path/to/checkout    Offline/local installation
 
-# Парсинг аргументов
-while [[ $# -gt 0 ]]; do
-    case $1 in
-        --auto-deps)
-            AUTO_INSTALL_DEPS=true
-            shift
-            ;;
-        --silent)
-            SILENT=true
-            AUTO_INSTALL_DEPS=true
-            shift
-            ;;
-        --force)
-            FORCE=true
-            shift
-            ;;
-        --help)
-            echo "Usage: $0 [OPTIONS]"
-            echo "Options:"
-            echo "  --auto-deps    Automatically install missing dependencies"
-            echo "  --silent       Silent installation (implies --auto-deps)"
-            echo "  --force        Skip all confirmation prompts"
-            echo "  --help         Show this help message"
-            exit 0
-            ;;
-        *)
-            echo "Unknown option: $1"
-            exit 1
-            ;;
-    esac
-done
+  --prefix DIR      Install DIR/bin/antimon (root: /usr/local; user: ~/.local)
+  --source DIR      Verify and install from a local checkout
+  --ref REF         Git ref to download (default: main, resolved to one commit)
+  --run             Open the menu after installing, or scan without a terminal
+  --auto-deps       Install curl and CA certificates if no downloader exists
+  --quiet, --silent Reduce output; errors are still shown
+  --force, --yes    Compatibility options; NEVER enable agent removal
+  --help
 
-# Функция вывода сообщений
-log_info() { 
-    if [ "$SILENT" = false ]; then
-        echo -e "${GREEN}[INFO]${NC} $1"
-    fi
-}
-log_warn() { 
-    if [ "$SILENT" = false ]; then
-        echo -e "${YELLOW}[WARN]${NC} $1"
-    fi
-}
-log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
-log_success() { 
-    if [ "$SILENT" = false ]; then
-        echo -e "${GREEN}[✓]${NC} $1"
-    fi
+Requires sh, awk, sed, mktemp, and sha256sum/shasum/openssl.
+Downloads require curl or wget with working HTTPS certificate verification.
+USAGE
 }
 
-# Проверка root прав
-check_root() {
-    if [ "$EUID" -ne 0 ]; then
-        log_error "Root privileges required"
-        log_info "Please run: sudo $0"
-        exit 1
-    fi
-}
-
-# Проверка и установка зависимостей
-install_dependencies() {
-    local missing_deps=()
-    
-    if ! command -v curl &> /dev/null && ! command -v wget &> /dev/null; then
-        missing_deps+=("curl")
-    fi
-    
-    if [ ${#missing_deps[@]} -eq 0 ]; then
-        log_info "All dependencies satisfied"
-        return 0
-    fi
-    
-    log_warn "Missing dependencies: ${missing_deps[*]}"
-    
-    # Автоматическая установка или запрос
-    if [ "$AUTO_INSTALL_DEPS" = true ]; then
-        log_info "Installing dependencies automatically..."
-    else
-        echo ""
-        read -p "Install missing dependencies? (Y/n): " -n 1 -r
-        echo
-        
-        if [[ ! $REPLY =~ ^[Yy]$ ]] && [[ ! -z $REPLY ]]; then
-            log_error "Cannot continue without required dependencies"
-            exit 1
+parse_args() {
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --prefix|--ref|--source)
+                [ "$#" -ge 2 ] && [ -n "$2" ] || fail "Missing value: $1"
+                case "$1" in --prefix) PREFIX=$2 ;; --ref) REF=$2 ;; --source) SOURCE=$2 ;; esac
+                shift
+                ;;
+            --run) RUN=1 ;;
+            --auto-deps) AUTO_DEPS=1 ;;
+            --quiet|--silent) QUIET=1 ;;
+            --yes|--force) ;;
+            --help|-h) usage; exit 0 ;;
+            *) fail "Unknown argument: $1" ;;
+        esac
+        shift
+    done
+    [ "$(uname -s)" = Linux ] || fail 'This installer supports Linux.'
+    if [ -z "$PREFIX" ]; then
+        if [ "$(id -u)" -eq 0 ]; then PREFIX=/usr/local
+        else [ -n "${HOME:-}" ] || fail 'HOME is unset; provide --prefix.'; PREFIX=$HOME/.local
         fi
     fi
-    
-    # Установка зависимостей
-    if command -v apt-get &> /dev/null; then
-        log_info "Installing via apt-get..."
-        apt-get update -qq
-        for dep in "${missing_deps[@]}"; do
-            apt-get install -y "$dep" || {
-                log_error "Failed to install $dep"
-                exit 1
-            }
-        done
-    elif command -v yum &> /dev/null; then
-        log_info "Installing via yum..."
-        for dep in "${missing_deps[@]}"; do
-            yum install -y "$dep" || {
-                log_error "Failed to install $dep"
-                exit 1
-            }
-        done
-    elif command -v dnf &> /dev/null; then
-        log_info "Installing via dnf..."
-        for dep in "${missing_deps[@]}"; do
-            dnf install -y "$dep" || {
-                log_error "Failed to install $dep"
-                exit 1
-            }
-        done
-    elif command -v pacman &> /dev/null; then
-        log_info "Installing via pacman..."
-        for dep in "${missing_deps[@]}"; do
-            pacman -S --noconfirm "$dep" || {
-                log_error "Failed to install $dep"
-                exit 1
-            }
-        done
-    else
-        log_error "Unknown package manager. Please install manually: ${missing_deps[*]}"
-        exit 1
-    fi
-    
-    log_success "Dependencies installed successfully"
-}
-
-# Создание директории
-create_directory() {
-    if [ -d "$HIDDEN_DIR" ]; then
-        log_info "Directory already exists: $HIDDEN_DIR"
-    else
-        mkdir -p "$HIDDEN_DIR" 2>/dev/null || {
-            log_error "Failed to create directory: $HIDDEN_DIR"
-            exit 1
-        }
-        log_info "Created directory: $HIDDEN_DIR"
+    case "$PREFIX" in /*) PREFIX=${PREFIX%/} ;; *) fail '--prefix must be absolute.' ;; esac
+    [ -n "$PREFIX" ] || fail 'Do not use / as the installation prefix.'
+    case "$REF" in ''|*[!a-zA-Z0-9._/-]*|../*|*/../*|*/..) fail 'Invalid Git ref.' ;; esac
+    if [ -n "$SOURCE" ]; then
+        case "$SOURCE" in /*) ;; *) fail '--source must be absolute.' ;; esac
+        [ -d "$SOURCE" ] || fail 'Source directory does not exist.'
     fi
 }
 
-# Скачивание скрипта
-download_script() {
-    log_info "Downloading anti-monitoring script..."
-    
-    if command -v curl &> /dev/null; then
-        if curl -fsSL "$SCRIPT_URL" -o "$SCRIPT_PATH" 2>/dev/null; then
-            log_info "Downloaded via curl"
-            return 0
-        else
-            log_warn "curl failed, trying wget..."
+cleanup() {
+    [ -z "$STAGED" ] || rm -f "$STAGED"
+    [ -z "$TEMP" ] || rm -rf "$TEMP"
+}
+
+install_downloader() {
+    has curl || has wget || {
+        [ "$AUTO_DEPS" -eq 1 ] || fail 'Install curl + ca-certificates, or use --source for an offline installation.'
+        [ "$(id -u)" -eq 0 ] || fail '--auto-deps requires root.'
+        if has apt-get; then
+            if ! apt-get update || ! apt-get install -y curl ca-certificates; then fail 'Dependency installation failed.'; fi
+        elif has dnf; then dnf install -y curl ca-certificates || fail 'Dependency installation failed.'
+        elif has yum; then yum install -y curl ca-certificates || fail 'Dependency installation failed.'
+        elif has zypper; then zypper --non-interactive install curl ca-certificates || fail 'Dependency installation failed.'
+        elif has pacman; then pacman -S --needed --noconfirm curl ca-certificates || fail 'Dependency installation failed.'
+        elif has apk; then apk add curl ca-certificates || fail 'Dependency installation failed.'
+        elif has xbps-install; then xbps-install -Sy curl ca-certificates || fail 'Dependency installation failed.'
+        else fail 'Install curl + ca-certificates with your package manager.'
         fi
-    fi
-    
-    if command -v wget &> /dev/null; then
-        if wget -qO "$SCRIPT_PATH" "$SCRIPT_URL" 2>/dev/null; then
-            log_info "Downloaded via wget"
-            return 0
-        else
-            log_error "wget failed"
-        fi
-    fi
-    
-    log_error "Failed to download script from $SCRIPT_URL"
-    exit 1
-}
-
-# Установка прав
-set_permissions() {
-    chmod +x "$SCRIPT_PATH" 2>/dev/null || {
-        log_error "Failed to set execute permission"
-        exit 1
     }
-    log_info "Set execute permissions"
 }
 
-# Проверка установки
-verify_installation() {
-    if [ ! -f "$SCRIPT_PATH" ]; then
-        log_error "Script file not found after installation"
-        return 1
-    fi
-    
-    if [ ! -x "$SCRIPT_PATH" ]; then
-        log_error "Script is not executable"
-        return 1
-    fi
-    
-    log_info "Installation verified"
-    return 0
-}
-
-# Запуск скрипта сейчас
-run_now() {
-    if [ "$FORCE" = true ]; then
-        log_info "Running anti-monitoring script with --force..."
-        bash "$SCRIPT_PATH" --force 2>/dev/null || log_warn "Some agents could not be removed"
-        log_success "Anti-monitoring script executed"
-    elif [ "$SILENT" = false ]; then
-        echo ""
-        echo -e "${YELLOW}⚠️  WARNING${NC}"
-        echo "This will remove hosting provider monitoring agents!"
-        echo ""
-        echo "After removal, the following will NOT work:"
-        echo "  ❌ Console access from hosting panel"
-        echo "  ❌ Password reset from panel"
-        echo "  ❌ Automated backups via panel"
-        echo "  ❌ Monitoring and alerts from provider"
-        echo ""
-        read -p "Run anti-monitoring script now? (yes/no): " -r
-        echo ""
-        
-        if [[ $REPLY =~ ^[Yy][Ee][Ss]$ ]]; then
-            log_info "Running anti-monitoring script..."
-            bash "$SCRIPT_PATH"
-            log_success "Done"
-        else
-            log_info "Skipped. You can run it later:"
-            echo "  bash $SCRIPT_PATH"
-        fi
-    fi
-}
-
-# Главная функция
-main() {
-    if [ "$SILENT" = false ]; then
-        echo "=========================================="
-        echo "  Anti-Monitoring Installer v${SCRIPT_VERSION}"
-        echo "=========================================="
-        echo ""
-    fi
-    
-    check_root
-    
-    log_info "Checking dependencies..."
-    install_dependencies
-    
-    log_info "Setting up installation..."
-    create_directory
-    download_script
-    set_permissions
-    
-    if verify_installation; then
-        log_success "Installation successful!"
-        
-        if [ "$SILENT" = false ]; then
-            echo ""
-            echo -e "${BLUE}Location:${NC} $SCRIPT_PATH"
-            echo -e "${BLUE}Manual run:${NC} bash $SCRIPT_PATH"
-            echo ""
-        fi
-        
-        run_now
-        
-        if [ "$SILENT" = false ]; then
-            echo ""
-            echo -e "${GREEN}✓ Installation complete!${NC}"
-            echo ""
-            log_info "To uninstall: curl -fsSL https://raw.githubusercontent.com/HVHBIGNAME/anti-monitoring/main/uninstall.sh | sudo bash"
-        fi
+fetch() {
+    if has curl; then
+        curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --connect-timeout 15 --max-time 120 --retry 2 "$1" -o "$2"
     else
-        log_error "Installation failed"
-        exit 1
+        wget -T 30 -O "$2" "$1"
     fi
 }
 
-main
+resolve_commit() {
+    if [ "${#REF}" -eq 40 ]; then
+        case "$REF" in *[!0-9a-fA-F]*) ;; *) printf '%s\n' "$REF"; return 0 ;; esac
+    fi
+    fetch "https://api.github.com/repos/$REPOSITORY/commits/$REF" "$TEMP/commit.json" || return 1
+    commit=$(sed -n 's/^[[:space:]]*"sha":[[:space:]]*"\([0-9a-f]*\)".*/\1/p' "$TEMP/commit.json" | sed -n '1p')
+    [ "${#commit}" -eq 40 ] || return 1
+    printf '%s\n' "$commit"
+}
+
+digest() {
+    if has sha256sum; then sha256sum "$1" | awk '{print $1}'
+    elif has shasum; then shasum -a 256 "$1" | awk '{print $1}'
+    elif has openssl; then openssl dgst -sha256 "$1" | awk '{print $NF}'
+    else return 1
+    fi
+}
+
+verify_payload() {
+    [ -s "$TEMP/antimon.sh" ] && [ -s "$TEMP/SHA256SUMS" ] || fail 'Empty download or missing checksum manifest.'
+    expected=$(awk '$2 == "antimon.sh" {print $1}' "$TEMP/SHA256SUMS")
+    [ "${#expected}" -eq 64 ] || fail 'Invalid checksum manifest.'
+    case "$expected" in *[!0-9a-f]*) fail 'Invalid SHA-256 digest.' ;; esac
+    actual=$(digest "$TEMP/antimon.sh") || fail 'Install sha256sum, shasum or openssl.'
+    [ "$actual" = "$expected" ] || fail 'SHA-256 mismatch; the installed command was not replaced.'
+    sh -n "$TEMP/antimon.sh" || fail 'Downloaded script failed shell syntax validation.'
+    grep -q '^# anti-monitoring: managed guest-agent inventory and service control\.$' "$TEMP/antimon.sh" || fail 'Unexpected script identity.'
+}
+
+main() {
+    parse_args "$@"
+    for tool in awk sed mktemp sh grep chmod mkdir mv cp; do has "$tool" || fail "Required tool not found: $tool"; done
+    has sha256sum || has shasum || has openssl || fail 'Install sha256sum, shasum or openssl.'
+    umask 077
+    TEMP=$(mktemp -d) || fail 'Cannot create a temporary directory.'
+    trap 'cleanup' 0
+    trap 'exit 130' INT
+    trap 'exit 143' HUP TERM
+    if [ -n "$SOURCE" ]; then
+        if ! cp "$SOURCE/antimon.sh" "$TEMP/antimon.sh" || ! cp "$SOURCE/SHA256SUMS" "$TEMP/SHA256SUMS"; then fail 'Incomplete local checkout. Generate SHA256SUMS first.'; fi
+        info "Source: $SOURCE"
+    else
+        install_downloader
+        commit=$(resolve_commit) || fail 'Cannot resolve Git ref. Check connectivity/GitHub rate limits, or provide a full commit SHA.'
+        info "Source: $REPOSITORY@$commit"
+        base=https://raw.githubusercontent.com/$REPOSITORY/$commit
+        if ! fetch "$base/antimon.sh" "$TEMP/antimon.sh" || ! fetch "$base/SHA256SUMS" "$TEMP/SHA256SUMS"; then fail 'Download failed; installation was not changed.'; fi
+    fi
+    verify_payload
+    destination=$PREFIX/bin/antimon
+    [ ! -L "$destination" ] || fail "Refusing to replace a symlink: $destination"
+    if [ -e "$destination" ]; then
+        if [ ! -f "$destination" ] || ! grep -q '^# anti-monitoring: managed guest-agent inventory and service control\.$' "$destination"; then fail "Refusing to overwrite an unrelated file: $destination"; fi
+    fi
+    (umask 022; mkdir -p "$PREFIX/bin") || fail "Cannot create $PREFIX/bin. Choose a writable prefix or run as root."
+    STAGED=$(mktemp "$PREFIX/bin/.antimon.XXXXXX") || fail 'Cannot stage the installation.'
+    if ! cp "$TEMP/antimon.sh" "$STAGED" || ! chmod 755 "$STAGED"; then fail 'Cannot prepare executable.'; fi
+    mv -f "$STAGED" "$destination" || fail 'Cannot atomically install executable.'
+    STAGED=
+    info "Installed: $destination"
+    info "Start: $destination"
+    case ":${PATH:-}:" in *":$PREFIX/bin:"*) ;; *) info "Add $PREFIX/bin to PATH, or use the full path above." ;; esac
+    if [ "$RUN" -eq 1 ]; then
+        if [ -t 1 ] && (exec 3<>/dev/tty) 2>/dev/null; then sh "$destination" menu
+        else sh "$destination" scan
+        fi
+    fi
+}
+
+main "$@"

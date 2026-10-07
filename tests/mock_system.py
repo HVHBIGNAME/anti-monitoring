@@ -107,6 +107,15 @@ elif TOOL == "snap":
         STATE["snaps"] = [name for name in STATE.get("snaps", []) if name not in ARGS[1:]]
         finish(mutation=True)
 elif TOOL == "systemctl":
+    if ARGS == ["daemon-reload"]:
+        fail_if_requested("daemon-reload")
+        for path in (ROOT / "rootfs" / "etc" / "systemd" / "system").glob("*.service"):
+            if "# anti-monitoring: managed boot entry." in path.read_text(encoding="utf-8"):
+                STATE["services"].setdefault(path.stem, {"startup": "disabled", "active": "inactive"})
+        finish(mutation=True)
+    if ARGS[0] == "is-enabled":
+        service = STATE["services"].get(ARGS[-1].removesuffix(".service"), {})
+        finish(0 if service.get("startup") in {"enabled", "enabled-runtime"} else 1)
     if "--property=Version" in ARGS:
         finish(0 if STATE["init"] == "systemd" else 1, "Version=256" if STATE["init"] == "systemd" else "no system bus")
     if ARGS[0] in {"list-unit-files", "list-units"}:
@@ -164,11 +173,11 @@ elif TOOL == "rc-service":
     service["active"] = "active" if verb == "start" else "inactive"
     finish(mutation=True)
 elif TOOL == "rc-update":
-    if ARGS == ["show", "-v"]:
+    if ARGS[0] == "show":
         finish(output="\n".join(f"{name} | {service['startup'].replace('-', '')}" for name, service in STATE["services"].items()))
     verb, name, level = ARGS
     fail_if_requested(verb)
-    service = STATE["services"][name]
+    service = STATE["services"].setdefault(name, {"startup": "-", "active": "inactive"})
     levels = [] if service["startup"] == "-" else service["startup"].split()
     if verb == "add" and level not in levels:
         levels.append(level)
@@ -179,6 +188,9 @@ elif TOOL == "rc-update":
 elif TOOL == "sv":
     name = Path(ARGS[-1]).name
     service = STATE["services"].get(name)
+    if not service and (ROOT / "rootfs" / "etc" / "sv" / name / "run").is_file():
+        service = {"startup": "enabled", "active": "inactive"}
+        STATE["services"][name] = service
     if not service:
         finish(1, "unknown service")
     verb = ARGS[0] if ARGS[0] != "-w" else ARGS[2]
@@ -198,6 +210,12 @@ elif TOOL == "service":
     service["active"] = "active" if verb == "start" else "inactive"
     finish(mutation=True)
 elif TOOL == "chkconfig":
+    if ARGS[0] == "--add":
+        STATE["services"].setdefault(ARGS[1], {"startup": "-", "active": "inactive"})
+        finish(mutation=True)
+    if ARGS[0] == "--del":
+        STATE["services"][ARGS[1]]["startup"] = "-"
+        finish(mutation=True)
     if ARGS[0] == "--list":
         service = STATE["services"][ARGS[1]]
         levels = service["startup"].split()
@@ -210,7 +228,25 @@ elif TOOL == "chkconfig":
         STATE["services"][name]["startup"] = "-" if action == "off" else "2 3 4 5 "
     finish(mutation=True)
 elif TOOL == "update-rc.d":
+    if ARGS[0] == "-f":
+        name, action = ARGS[1:]
+        if action != "remove":
+            finish(99, "unsupported update-rc.d operation")
+        etc = ROOT / "rootfs" / "etc"
+        for link in etc.glob(f"rc?.d/[SK][0-9][0-9]{name}"):
+            link.unlink()
+        STATE["services"][name]["startup"] = "-"
+        finish(mutation=True)
     name, action, *levels = ARGS
+    if action == "defaults":
+        for level in (2, 3, 4, 5):
+            directory = ROOT / "rootfs" / "etc" / f"rc{level}.d"
+            directory.mkdir(exist_ok=True)
+            link = directory / f"S99{name}"
+            if not link.is_symlink():
+                link.symlink_to(f"../init.d/{name}")
+        STATE["services"].setdefault(name, {"startup": "2 3 4 5 ", "active": "inactive"})
+        finish(mutation=True)
     if action not in {"disable", "enable"}:
         finish(99, "unsupported update-rc.d operation")
     fail_if_requested(action)

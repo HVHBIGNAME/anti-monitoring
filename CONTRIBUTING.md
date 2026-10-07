@@ -6,7 +6,7 @@ Development tools: Python 3.10+, ShellCheck, and the shells you want to verify.
 Runtime users do not need Python or ShellCheck.
 
 ```sh
-shellcheck -s sh antimon.sh install.sh uninstall.sh tests/*.sh
+shellcheck -s sh antimon.sh tests/*.sh
 ANTIMON_TEST_SHELL=dash python3 -m unittest discover -s tests -v
 ANTIMON_TEST_SHELL=bash python3 -m unittest discover -s tests -v
 ANTIMON_TEST_SHELL='busybox ash' python3 -m unittest discover -s tests -v
@@ -14,7 +14,7 @@ python3 tools/checksums.py --check
 python3 tools/generate_assets.py --check
 ```
 
-After changing a shipped script, regenerate `SHA256SUMS`:
+After changing `antimon.sh`, regenerate `SHA256SUMS`:
 
 ```sh
 python3 tools/checksums.py

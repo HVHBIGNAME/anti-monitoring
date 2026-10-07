@@ -6,7 +6,7 @@ import hashlib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPTS = ("antimon.sh", "install.sh", "uninstall.sh")
+SCRIPTS = ("antimon.sh",)
 
 
 def main():

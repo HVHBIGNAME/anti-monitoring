@@ -6,6 +6,18 @@ set -uf
 
 VERSION=2.0.0
 SYSTEM_ROOT=
+SCRIPT_FILE=$0
+PREFIX=
+SOURCE=
+REF=
+RUN=0
+QUIET=0
+LEGACY=0
+AUTOSTART=
+BOOT_SERVICE=anti-monitoring
+BOOT_FILE=
+BOOT_LINK=
+BOOT_BINARY=
 COMMAND=
 AGENTS=
 ALL=0
@@ -62,39 +74,99 @@ error() { printf '[!] %s\n' "$*" >&2; }
 
 usage() {
     say 'Anti-Monitoring — manage Linux guest agents' 'Anti-Monitoring — управление гостевыми агентами Linux'
-    cat <<'USAGE'
+    if [ "$LANGUAGE" = ru ]; then
+        cat <<'USAGE'
 
-  antimon                         Interactive menu on a terminal; scan otherwise
-  antimon scan [--json]            Read-only inventory; root is not required
-  antimon list                     Agent IDs and their responsibilities
-  antimon plan [--agents IDS]      Preview disabling (all agents by default)
-  antimon disable --agents IDS     Stop services and disable their startup
-  antimon remove --agents IDS      Disable services and remove exact packages
-  antimon restore [--snapshot ID]  Restore a disable snapshot (latest by default)
+  sh antimon.sh [действие] [параметры]    После установки: antimon [флаги]
 
-  --agents qemu,aws-ssm            Comma-separated agent IDs
-  --all                           Explicitly select all catalog entries
-  --dry-run                       Preview only; no writes or root requirement
-  --yes, --force                   Confirm an explicit disable/remove/restore
-  --state-dir /absolute/path       Journal directory (/var/lib/anti-monitoring)
-  --lang en|ru|auto                Interface language (detected from locale)
-  --json                          Machine-readable scan; diagnostics go to stderr
-  --no-color                      Accepted for automation (output is always plain)
-  --help, --version
+  --install       Установить команду antimon (без изменения агентов)
+  --uninstall     Удалить команду и её правило автостарта; сохранить снимки
+  --scan          Проверить установленные агенты (без root)
+  --list          Показать ID агентов
+  --disable       Отключить выбранные службы с записью снимка
+  --remove        Отключить службы и удалить выбранные пакеты
+  --restore       Восстановить состояния служб из снимка
+  --menu          Открыть меню
 
+  --agents IDS    ID через запятую, например qemu,aws-ssm
+  --all           Выбрать весь каталог
+  --dry-run       Только показать план, без изменений
+  --yes           Подтвердить действие без вопросов (--force — синоним)
+  --autostart     Отключать выбранные агенты при загрузке Linux
+  --no-autostart  Убрать автостарт; агенты остаются в текущем состоянии
+  --run           Открыть меню сразу после --install
+  --prefix DIR    Каталог установки (root: /usr/local; пользователь: ~/.local)
+  --source DIR    Установка из checkout с проверкой SHA-256
+  --ref REF       Скачать конкретный Git ref при --install
+  --snapshot ID   Снимок для --restore (по умолчанию последний disable)
+  --state-dir DIR Каталог снимков (по умолчанию /var/lib/anti-monitoring)
+  --json          JSON-вывод для --scan
+  --lang ru|en    Язык интерфейса (по умолчанию определяется автоматически)
+  --quiet         Короткий вывод установки (--silent — синоним)
+  --legacy        Вместе с --uninstall удалить старый ~/.cache/system/.antimon
+  --help, -h      Эта справка
+  --version, -V   Версия
+
+  antimon --disable --agents qemu --dry-run
+  sudo antimon --autostart --agents qemu --yes
+  sudo antimon --no-autostart
+
+Автостарт выключен по умолчанию. --install --autostart можно объединить.
+Автостарт выполняет --disable при загрузке, а не удаление пакетов.
+Без флагов: меню в терминале, проверка при перенаправленном вводе.
 USAGE
-    say 'Installation and scanning never remove agents. Removal keeps configuration files where the package manager permits it.' \
-        'Установка и проверка не удаляют агентов. Удаление сохраняет конфиги, когда это позволяет пакетный менеджер.'
+    else
+        cat <<'USAGE'
+
+  sh antimon.sh [action] [options]       After installation: antimon [flags]
+
+  --install       Install antimon without changing guest agents
+  --uninstall     Remove antimon and its boot entry; keep recovery snapshots
+  --scan          Read-only inventory (no root required)
+  --list          List agent IDs
+  --disable       Stop selected services and save recovery state
+  --remove        Disable services and remove selected packages
+  --restore       Restore recorded service states
+  --menu          Open the interactive menu
+
+  --agents IDS    Comma-separated IDs, e.g. qemu,aws-ssm
+  --all           Select the entire catalog
+  --dry-run       Preview only; no writes
+  --yes           Confirm without prompting (--force is an alias)
+  --autostart     Disable selected agents at Linux boot (off by default)
+  --no-autostart  Remove the boot entry; leave guest agents as they are
+  --run           Open the menu immediately after --install
+  --prefix DIR    Install prefix (root: /usr/local; user: ~/.local)
+  --source DIR    Install from a checkout with SHA-256 verification
+  --ref REF       Download a specific Git ref with --install
+  --snapshot ID   Snapshot for --restore (latest disable by default)
+  --state-dir DIR Recovery directory (/var/lib/anti-monitoring)
+  --json          Machine-readable --scan output
+  --lang en|ru    Interface language (auto-detected by default)
+  --quiet         Less installer output (--silent is an alias)
+  --legacy        With --uninstall, also remove ~/.cache/system/.antimon
+  --help, -h      Show this help
+  --version, -V   Show version
+
+  antimon --disable --agents qemu --dry-run
+  sudo antimon --autostart --agents qemu --yes
+  sudo antimon --no-autostart
+
+Combine --install --autostart to install and register boot execution.
+Autostart runs --disable at boot; it never removes packages.
+No flags: menu on a terminal; scan with redirected input.
+USAGE
+    fi
 }
 
 parse_args() {
     while [ "$#" -gt 0 ]; do
         case "$1" in
-            scan|status|list|plan|disable|remove|restore|menu)
+            --scan|--list|--disable|--remove|--restore|--menu|--install|--uninstall|scan|status|list|plan|disable|remove|restore|menu)
                 [ -z "$COMMAND" ] || { error 'Specify one command.'; return 2; }
-                COMMAND=$1
+                COMMAND=${1#--}
                 ;;
-            --agents|--state-dir|--snapshot|--lang)
+            --agents|--state-dir|--snapshot|--lang|--prefix|--source|--ref)
                 if [ "$#" -lt 2 ] || [ -z "$2" ]; then
                     error "Missing value: $1"
                     return 2
@@ -104,6 +176,9 @@ parse_args() {
                     --state-dir) STATE_DIR=$2 ;;
                     --snapshot) SNAPSHOT_ID=$2 ;;
                     --lang) LANGUAGE=$2 ;;
+                    --prefix) PREFIX=$2 ;;
+                    --source) SOURCE=$2 ;;
+                    --ref) REF=$2 ;;
                 esac
                 shift
                 ;;
@@ -111,6 +186,13 @@ parse_args() {
             --dry-run) DRY_RUN=1 ;;
             --yes|--force) YES=1 ;;
             --json) JSON=1 ;;
+            --autostart|--no-autostart)
+                [ -z "$AUTOSTART" ] || { error 'Choose --autostart or --no-autostart once.'; return 2; }
+                AUTOSTART=$1
+                ;;
+            --run) RUN=1 ;;
+            --quiet|--silent) QUIET=1 ;;
+            --legacy) LEGACY=1 ;;
             --no-color) ;;
             --help|-h) COMMAND=help ;;
             --version|-V) COMMAND=version ;;
@@ -125,9 +207,11 @@ parse_args() {
     esac
     LC_ALL=C
     export LC_ALL
+    case "$COMMAND" in help|version) return 0 ;; esac
     [ "$ALL" -eq 0 ] || [ -z "$AGENTS" ] || { error '--all and --agents are mutually exclusive.'; return 2; }
     if [ -z "$COMMAND" ]; then
-        if [ "$DRY_RUN" -eq 1 ]; then COMMAND=plan
+        if [ -n "$AUTOSTART" ]; then COMMAND=autostart
+        elif [ "$DRY_RUN" -eq 1 ]; then COMMAND=plan
         elif [ "$JSON" -eq 0 ] && [ -t 0 ] && [ -t 1 ]; then COMMAND=menu
         else COMMAND=scan
         fi
@@ -151,6 +235,27 @@ parse_args() {
             ;;
     esac
     [ -z "$SNAPSHOT_ID" ] || [ "$COMMAND" = restore ] || { error '--snapshot requires restore.'; return 2; }
+    if [ -n "$AUTOSTART" ]; then
+        case "$COMMAND:$AUTOSTART" in install:--autostart|autostart:*) ;;
+            *) error 'Use --autostart alone or with --install; --no-autostart is a separate action.'; return 2 ;;
+        esac
+        if [ "$AUTOSTART" = --autostart ]; then
+            [ "$ALL" -eq 1 ] || [ -n "$AGENTS" ] || { error '--autostart requires --agents IDS or --all.'; return 2; }
+        elif [ "$ALL" -eq 1 ] || [ -n "$AGENTS" ]; then
+            error '--no-autostart removes the complete boot entry; omit agent selection.'
+            return 2
+        fi
+    fi
+    if [ "$COMMAND" != install ] && { [ -n "$SOURCE" ] || [ -n "$REF" ] || [ "$RUN" -eq 1 ]; }; then
+        error '--source, --ref and --run require --install.'; return 2
+    fi
+    if [ "$LEGACY" -eq 1 ] && [ "$COMMAND" != uninstall ]; then error '--legacy requires --uninstall.'; return 2; fi
+    if [ "$COMMAND" = uninstall ] && { [ "$ALL" -eq 1 ] || [ -n "$AGENTS" ]; }; then
+        error '--uninstall removes the tool; use --remove for agents.'; return 2
+    fi
+    if [ "$COMMAND" = install ] && [ -z "$AUTOSTART" ] && { [ "$ALL" -eq 1 ] || [ -n "$AGENTS" ]; }; then
+        error '--install accepts agent selection only with --autostart.'; return 2
+    fi
     case "$STATE_DIR" in
         /|*/../*|*/..|*/./*|*/.) error 'Use a dedicated, absolute state directory.'; return 2 ;;
         /*) STATE_DIR=${STATE_DIR%/} ;;
@@ -166,7 +271,7 @@ validate_agents() (
     case "$AGENTS" in ,*|*,|*,,*|*[!a-z0-9,-]*) error 'Invalid agent list.'; exit 2 ;; esac
     IFS=,
     for entry in $AGENTS; do
-        known_agent "$entry" || { error "Unknown agent: $entry (see antimon list)"; exit 2; }
+        known_agent "$entry" || { error "Unknown agent: $entry (see antimon --list)"; exit 2; }
     done
 )
 
@@ -1080,6 +1185,344 @@ dispatch() {
     fi
 }
 
+install_prefix() {
+    if [ -z "$PREFIX" ]; then
+        if [ -f "$SCRIPT_FILE" ] && [ "${SCRIPT_FILE##*/}" = antimon ] && [ "$(basename "$(dirname "$SCRIPT_FILE")")" = bin ]; then
+            PREFIX=$(CDPATH='' cd -- "$(dirname "$SCRIPT_FILE")/.." && pwd -P) || return 1
+        elif [ "$(id -u)" -eq 0 ]; then PREFIX=/usr/local
+        else
+            [ -n "${HOME:-}" ] || { error 'HOME is unset; provide --prefix.'; return 2; }
+            PREFIX=$HOME/.local
+        fi
+    fi
+    case "$PREFIX" in
+        /|*/../*|*/..|*/./*|*/.) error 'Use a dedicated absolute installation prefix.'; return 2 ;;
+        /*) PREFIX=${PREFIX%/} ;;
+        *) error '--prefix must be absolute.'; return 2 ;;
+    esac
+}
+
+install_tool() (
+    temp=
+    staged=
+    trap '[ -z "$staged" ] || rm -f "$staged"; [ -z "$temp" ] || rm -rf "$temp"' 0
+    trap 'exit 130' INT
+    trap 'exit 143' HUP TERM
+    info() { [ "$QUIET" -eq 1 ] || printf '%s\n' "$*"; }
+    fail() { error "$*"; exit 1; }
+    fetch() {
+        if has curl; then
+            curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --connect-timeout 15 --max-time 120 --retry 2 "$1" -o "$2"
+        elif has wget; then wget -T 30 -O "$2" "$1"
+        else error 'Install curl or wget for network installation, or run a local antimon.sh.'; return 1
+        fi
+    }
+    digest() {
+        if has sha256sum; then sha256sum "$1" | awk '{print $1}'
+        elif has shasum; then shasum -a 256 "$1" | awk '{print $1}'
+        elif has openssl; then openssl dgst -sha256 "$1" | awk '{print $NF}'
+        else return 1
+        fi
+    }
+    if [ -n "$SOURCE" ] && [ -n "$REF" ]; then fail 'Choose --source or --ref.'; fi
+    if [ "$DRY_RUN" -eq 1 ]; then info "Would install: $PREFIX/bin/antimon"; exit 0; fi
+    umask 077
+    temp=$(mktemp -d) || fail 'Cannot create a temporary directory.'
+    verify_checksum=1
+    if [ -n "$SOURCE" ]; then
+        case "$SOURCE" in /*) ;; *) fail '--source must be absolute.' ;; esac
+        if ! cp "$SOURCE/antimon.sh" "$temp/antimon.sh" || ! cp "$SOURCE/SHA256SUMS" "$temp/SHA256SUMS"; then fail 'Incomplete checkout.'; fi
+    elif [ -z "$REF" ] && [ -f "$SCRIPT_FILE" ] && grep -qx '# anti-monitoring: managed guest-agent inventory and service control.' "$SCRIPT_FILE"; then
+        cp "$SCRIPT_FILE" "$temp/antimon.sh" || fail 'Cannot copy this script.'
+        verify_checksum=0
+    else
+        REF=${REF:-main}
+        case "$REF" in *[!a-zA-Z0-9._/-]*|../*|*/../*|*/..) fail 'Invalid Git ref.' ;; esac
+        commit=
+        if [ "${#REF}" -eq 40 ]; then case "$REF" in *[!0-9a-fA-F]*) ;; *) commit=$REF ;; esac; fi
+        if [ -z "$commit" ]; then
+            fetch "https://api.github.com/repos/HVHBIGNAME/anti-monitoring/commits/$REF" "$temp/commit.json" || fail 'Cannot resolve Git ref; check connectivity/rate limits or use a full commit SHA.'
+            commit=$(sed -n 's/^[[:space:]]*"sha":[[:space:]]*"\([0-9a-f]*\)".*/\1/p' "$temp/commit.json" | sed -n '1p')
+            [ "${#commit}" -eq 40 ] || fail 'Invalid commit response.'
+        fi
+        info "Source: HVHBIGNAME/anti-monitoring@$commit"
+        base=https://raw.githubusercontent.com/HVHBIGNAME/anti-monitoring/$commit
+        if ! fetch "$base/antimon.sh" "$temp/antimon.sh" || ! fetch "$base/SHA256SUMS" "$temp/SHA256SUMS"; then fail 'Download failed; installation was not changed.'; fi
+    fi
+    [ -s "$temp/antimon.sh" ] || fail 'Empty script.'
+    if [ "$verify_checksum" -eq 1 ]; then
+        expected=$(awk '$2 == "antimon.sh" {print $1}' "$temp/SHA256SUMS")
+        [ "${#expected}" -eq 64 ] || fail 'Invalid checksum manifest.'
+        case "$expected" in *[!0-9a-f]*) fail 'Invalid SHA-256 digest.' ;; esac
+        actual=$(digest "$temp/antimon.sh") || fail 'Install sha256sum, shasum or openssl.'
+        [ "$actual" = "$expected" ] || fail 'SHA-256 mismatch; installation was not changed.'
+    fi
+    sh -n "$temp/antimon.sh" || fail 'Invalid shell syntax.'
+    grep -qx '# anti-monitoring: managed guest-agent inventory and service control.' "$temp/antimon.sh" || fail 'Unexpected script identity.'
+    destination=$PREFIX/bin/antimon
+    [ ! -L "$destination" ] || fail "Refusing to replace a symlink: $destination"
+    if [ -e "$destination" ]; then
+        if [ ! -f "$destination" ] || ! grep -qx '# anti-monitoring: managed guest-agent inventory and service control.' "$destination"; then
+            fail "Refusing to overwrite an unrelated file: $destination"
+        fi
+    fi
+    (umask 022; mkdir -p "$PREFIX/bin") || fail "Cannot create $PREFIX/bin. Choose a writable prefix or run as root."
+    staged=$(mktemp "$PREFIX/bin/.antimon.XXXXXX") || fail 'Cannot stage installation.'
+    if ! cp "$temp/antimon.sh" "$staged" || ! chmod 755 "$staged"; then fail 'Cannot prepare executable.'; fi
+    mv -f "$staged" "$destination" || fail 'Cannot atomically install executable.'
+    staged=
+    info "Installed: $destination"
+    info "Help: $destination --help"
+    case ":${PATH:-}:" in *":$PREFIX/bin:"*) ;; *) info "Add $PREFIX/bin to PATH, or use the full path." ;; esac
+)
+
+boot_paths() {
+    BOOT_BINARY=$PREFIX/bin/antimon
+    BOOT_LINK=
+    case "$INIT_SYSTEM" in
+        systemd) BOOT_FILE=$SYSTEM_ROOT/etc/systemd/system/$BOOT_SERVICE.service ;;
+        openrc|sysv) BOOT_FILE=$SYSTEM_ROOT/etc/init.d/$BOOT_SERVICE ;;
+        runit) BOOT_FILE=$SYSTEM_ROOT/etc/sv/$BOOT_SERVICE/run; BOOT_LINK=$RUNIT_DIR/$BOOT_SERVICE ;;
+        *) BOOT_FILE= ;;
+    esac
+}
+
+check_boot_owner() {
+    [ -n "$BOOT_FILE" ] || { error 'Autostart requires systemd, OpenRC, runit or SysV init.'; return 2; }
+    if [ -L "$BOOT_FILE" ]; then error "Refusing boot-entry symlink: $BOOT_FILE"; return 2; fi
+    if [ -e "$BOOT_FILE" ]; then
+        if [ ! -f "$BOOT_FILE" ] || ! grep -qxF '# anti-monitoring: managed boot entry.' "$BOOT_FILE" ||
+            ! grep -qxF "# executable: $BOOT_BINARY" "$BOOT_FILE"; then
+            error "Boot entry belongs to another program or prefix: $BOOT_FILE"
+            return 2
+        fi
+    fi
+    if [ -n "$BOOT_LINK" ] && { [ -e "$BOOT_LINK" ] || [ -L "$BOOT_LINK" ]; }; then
+        if [ ! -L "$BOOT_LINK" ] || [ "$(readlink "$BOOT_LINK")" != "${BOOT_FILE%/run}" ]; then
+            error "Unrelated runit entry: $BOOT_LINK"; return 2
+        fi
+    fi
+}
+
+trusted_boot_path() (
+    path=$1
+    while [ -n "$path" ]; do
+        [ ! -L "$path" ] || { error "Autostart path must not contain symlinks: $path"; exit 2; }
+        if [ -e "$path" ]; then
+            permissions=$(stat -c '%a:%u' "$path") || exit 2
+            mode=${permissions%:*}
+            if [ "${permissions##*:}" != 0 ] || [ $((0$mode & 0022)) -ne 0 ]; then
+                error "Autostart requires root-owned paths without group/other write access: $path"
+                exit 2
+            fi
+        fi
+        [ "$path" != / ] || break
+        path=${path%/*}
+        [ -n "$path" ] || path=/
+    done
+)
+
+boot_preflight() {
+    check_boot_owner || return 2
+    case "$BOOT_BINARY$STATE_DIR" in *[!a-zA-Z0-9_./\ -]*) error 'Autostart paths may contain letters, numbers, spaces, dots, dashes, underscores and slashes.'; return 2 ;; esac
+    trusted_boot_path "$BOOT_BINARY" || return 2
+    trusted_boot_path "$(dirname "$BOOT_FILE")" || return 2
+    if [ "$INIT_SYSTEM" = runit ]; then
+        [ -r "$SYSTEM_ROOT/proc/sys/kernel/random/boot_id" ] || { error 'runit autostart requires /proc/sys/kernel/random/boot_id.'; return 2; }
+        if [ -d "${BOOT_FILE%/run}" ] && [ ! -f "$BOOT_FILE" ]; then
+            error 'Existing runit directory has no owned boot entry.'; return 2
+        fi
+    fi
+}
+
+render_boot_entry() {
+    if [ "$INIT_SYSTEM" = openrc ]; then printf '#!/sbin/openrc-run\n'
+    elif [ "$INIT_SYSTEM" != systemd ]; then printf '#!/bin/sh\n'
+    fi
+    printf '# anti-monitoring: managed boot entry.\n# executable: %s\n' "$BOOT_BINARY"
+    if [ "$ALL" -eq 1 ]; then boot_selection=--all; else boot_selection="--agents $AGENTS"; fi
+    boot_command="'$BOOT_BINARY' --disable $boot_selection --yes --state-dir '$STATE_DIR' --lang $LANGUAGE"
+    case "$INIT_SYSTEM" in
+        systemd)
+            cat <<EOF
+[Unit]
+Description=Anti-Monitoring selected guest-agent policy
+After=network.target
+[Service]
+Type=oneshot
+ExecStart="$BOOT_BINARY" --disable $boot_selection --yes --state-dir "$STATE_DIR" --lang $LANGUAGE
+RemainAfterExit=yes
+TimeoutStartSec=180
+[Install]
+WantedBy=multi-user.target
+EOF
+            ;;
+        openrc)
+            cat <<EOF
+description="Anti-Monitoring selected guest-agent policy"
+depend() { need localmount; after bootmisc; }
+start() {
+    ebegin "Applying Anti-Monitoring policy"
+    $boot_command
+    eend \$?
+}
+stop() { return 0; }
+EOF
+            ;;
+        sysv)
+            cat <<EOF
+# chkconfig: 2345 99 01
+# description: Anti-Monitoring selected guest-agent policy
+### BEGIN INIT INFO
+# Provides:          $BOOT_SERVICE
+# Required-Start:    \$local_fs
+# Required-Stop:
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: Apply selected guest-agent policy
+### END INIT INFO
+case "\${1:-}" in
+    start) $boot_command ;;
+    stop) exit 0 ;;
+    *) echo "Usage: \$0 start|stop" >&2; exit 2 ;;
+esac
+EOF
+            ;;
+        runit)
+            registered_boot=$(cat "$SYSTEM_ROOT/proc/sys/kernel/random/boot_id") || return 1
+            case "$registered_boot" in ''|*[!a-fA-F0-9-]*) error 'Invalid boot ID.'; return 2 ;; esac
+            cat <<EOF
+# Registration does not apply the policy during the current boot.
+boot_id=\$(cat /proc/sys/kernel/random/boot_id) || exit 1
+if [ "\$boot_id" != '$registered_boot' ]; then
+    $boot_command
+    result=\$?
+    printf 'Anti-Monitoring boot exit: %s\n' "\$result"
+fi
+exec sv down .
+EOF
+            ;;
+    esac
+}
+
+enable_boot() (
+    [ -x "$BOOT_BINARY" ] || { error 'Install antimon first with --install.'; exit 2; }
+    grep -qxF '# anti-monitoring: managed guest-agent inventory and service control.' "$BOOT_BINARY" || { error 'Installed command has an unexpected identity.'; exit 2; }
+    temporary=
+    trap '[ -z "$temporary" ] || rm -f "$temporary"' 0
+    (umask 022; mkdir -p "$(dirname "$BOOT_FILE")") || exit 1
+    temporary=$(mktemp "$(dirname "$BOOT_FILE")/.antimon-boot.XXXXXX") || exit 1
+    render_boot_entry > "$temporary" || exit 1
+    if [ "$INIT_SYSTEM" = systemd ]; then chmod 644 "$temporary" || exit 1
+    else
+        if ! sh -n "$temporary" || ! chmod 755 "$temporary"; then exit 1; fi
+    fi
+    mv -f "$temporary" "$BOOT_FILE" || exit 1
+    temporary=
+    case "$INIT_SYSTEM" in
+        systemd)
+            systemctl daemon-reload && systemctl enable "$BOOT_SERVICE.service" && systemctl is-enabled --quiet "$BOOT_SERVICE.service"
+            ;;
+        openrc)
+            rc-update add "$BOOT_SERVICE" default || exit 1
+            rc-update show default | awk -v name="$BOOT_SERVICE" '$1 == name {found=1} END {exit !found}'
+            ;;
+        sysv)
+            if [ "$SYSV_TOOL" = update-rc.d ]; then
+                if ! update-rc.d "$BOOT_SERVICE" defaults || ! update-rc.d "$BOOT_SERVICE" enable; then exit 1; fi
+            else
+                if ! chkconfig --add "$BOOT_SERVICE" || ! chkconfig "$BOOT_SERVICE" on; then exit 1; fi
+            fi
+            [ -n "$(sysv_levels "$BOOT_SERVICE")" ]
+            ;;
+        runit)
+            [ -L "$BOOT_LINK" ] || ln -s "${BOOT_FILE%/run}" "$BOOT_LINK" || exit 1
+            [ -L "$BOOT_LINK" ]
+            ;;
+    esac
+)
+
+disable_boot() {
+    check_boot_owner || return 2
+    if [ ! -f "$BOOT_FILE" ]; then
+        [ -z "$BOOT_LINK" ] || [ ! -L "$BOOT_LINK" ] || { error 'Orphaned runit entry; inspect it manually.'; return 2; }
+        return 0
+    fi
+    if [ "$DRY_RUN" -eq 1 ]; then printf 'Would remove autostart: %s\n' "$BOOT_FILE"; return 0; fi
+    require_root || return 2
+    case "$INIT_SYSTEM" in
+        systemd) systemctl disable "$BOOT_SERVICE.service" || return 1 ;;
+        openrc)
+            boot_levels=$(rc-update show -v) || return 1
+            boot_levels=$(printf '%s\n' "$boot_levels" | awk -v name="$BOOT_SERVICE" '$1 == name {for (i=3;i<=NF;i++) print $i}')
+            for boot_level in $boot_levels; do rc-update del "$BOOT_SERVICE" "$boot_level" || return 1; done
+            ;;
+        sysv)
+            if [ "$SYSV_TOOL" = update-rc.d ]; then update-rc.d -f "$BOOT_SERVICE" remove || return 1
+            else chkconfig --del "$BOOT_SERVICE" || return 1
+            fi
+            ;;
+        runit)
+            if [ -L "$BOOT_LINK" ]; then
+                sv down "$BOOT_LINK" || return 1
+                rm -f "$BOOT_LINK" || return 1
+            fi
+            # Keep the inactive service definition and supervisor metadata so it
+            # can be registered again without deleting runit's state directory.
+            return 0
+            ;;
+    esac
+    rm -f "$BOOT_FILE" || return 1
+    if [ "$INIT_SYSTEM" = systemd ]; then systemctl daemon-reload || return 1; fi
+}
+
+configure_boot() {
+    if [ "$AUTOSTART" = --no-autostart ]; then
+        check_boot_owner || return 2
+        if [ "$DRY_RUN" -eq 0 ] && [ -f "$BOOT_FILE" ]; then
+            require_root || return 2
+            lock_state || return $?
+        fi
+        disable_boot || return $?
+        [ "$DRY_RUN" -eq 1 ] || say 'Autostart removed.' 'Автостарт выключен.'
+        return 0
+    fi
+    boot_preflight || return 2
+    printf 'Autostart / %s: %s --disable %s\n' "$INIT_SYSTEM" "$BOOT_BINARY" "${AGENTS:---all}"
+    [ "$DRY_RUN" -eq 0 ] || return 0
+    require_root || return 2
+    confirm || return $?
+    lock_state || return $?
+    if ! enable_boot; then error 'Autostart setup or verification failed; inspect the boot entry.'; return 1; fi
+    say 'Autostart enabled for the next boot. Guest agents were not changed now.' \
+        'Автостарт включён со следующей загрузки. Сейчас состояние агентов не изменено.'
+}
+
+uninstall_tool() {
+    destination=$PREFIX/bin/antimon
+    if [ -L "$destination" ]; then error "Refusing to remove a symlink: $destination"; return 2; fi
+    if [ -e "$destination" ] && { [ ! -f "$destination" ] || ! grep -qxF '# anti-monitoring: managed guest-agent inventory and service control.' "$destination"; }; then
+        error "Refusing to remove an unrelated file: $destination"; return 2
+    fi
+    # An ordinary per-user installation does not own a system-wide boot entry.
+    if [ -n "$BOOT_FILE" ] && [ -f "$BOOT_FILE" ] && grep -qxF "# executable: $destination" "$BOOT_FILE"; then
+        if [ "$DRY_RUN" -eq 0 ]; then require_root || return 2; lock_state || return $?; fi
+        disable_boot || return $?
+    fi
+    if [ "$DRY_RUN" -eq 1 ]; then printf 'Would remove: %s\n' "$destination"
+    else rm -f "$destination" || return 1; printf 'Removed: %s\n' "$destination"
+    fi
+    if [ "$LEGACY" -eq 1 ]; then
+        [ -n "${HOME:-}" ] || { error 'HOME is unset.'; return 2; }
+        legacy_file=$HOME/.cache/system/.antimon
+        if [ -e "$legacy_file" ] || [ -L "$legacy_file" ]; then
+            if [ -L "$legacy_file" ] || ! grep -q 'Anti-Monitoring Tool' "$legacy_file"; then error 'Unrecognized legacy script.'; return 2; fi
+            if [ "$DRY_RUN" -eq 1 ]; then printf 'Would remove: %s\n' "$legacy_file"; else rm -f "$legacy_file" || return 1; fi
+        fi
+    fi
+    say 'Recovery snapshots and guest-agent state were preserved.' 'Снимки и состояние гостевых агентов сохранены.'
+}
+
 main() {
     parse_args "$@" || return $?
     case "$COMMAND" in
@@ -1088,6 +1531,33 @@ main() {
         list) catalog | awk -F '|' '{ printf "%-18s %s\n  %s\n", $1, $2, $5 }'; return 0 ;;
     esac
     detect_platform || return $?
+    case "$COMMAND" in
+        install|uninstall|autostart)
+            install_prefix || return $?
+            boot_paths
+            ;;
+    esac
+    case "$COMMAND" in
+        install)
+            if [ -n "$AUTOSTART" ]; then
+                boot_preflight || return 2
+                if [ "$DRY_RUN" -eq 0 ]; then require_root || return 2; fi
+            fi
+            install_tool || return $?
+            if [ -n "$AUTOSTART" ]; then
+                configure_boot || return $?
+                cleanup_lock
+            fi
+            if [ "$RUN" -eq 1 ] && [ "$DRY_RUN" -eq 0 ]; then
+                if [ -t 1 ] && (exec 3<>/dev/tty) 2>/dev/null; then sh "$PREFIX/bin/antimon" --menu --lang "$LANGUAGE" || return $?
+                else sh "$PREFIX/bin/antimon" --scan --lang "$LANGUAGE" || return $?
+                fi
+            fi
+            return 0
+            ;;
+        uninstall) uninstall_tool; return $? ;;
+        autostart) configure_boot; return $? ;;
+    esac
     if [ "$COMMAND" = menu ]; then menu; else dispatch; fi
 }
 

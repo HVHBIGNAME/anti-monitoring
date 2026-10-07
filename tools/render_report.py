@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Turn an `antimon scan --json` result into a local, self-contained SVG chart."""
+"""Turn an `antimon --scan --json` result into a local, self-contained SVG chart."""
 
 import argparse
 import json

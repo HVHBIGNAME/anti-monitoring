@@ -38,7 +38,7 @@ jobs:
             sudo apt-get install -y --no-install-recommends "${missing[@]}"
           fi
       - name: ShellCheck
-        run: shellcheck -s sh antimon.sh install.sh uninstall.sh tests/*.sh
+        run: shellcheck -s sh antimon.sh tests/*.sh
       - name: Stateful contracts and report validation
         env:
           ANTIMON_TEST_SHELL: ${{ matrix.shell }}
@@ -54,10 +54,10 @@ jobs:
         run: |
           set -o pipefail
           prefix="$RUNNER_TEMP/antimon-network-install"
-          curl -fsSL "https://raw.githubusercontent.com/HVHBIGNAME/anti-monitoring/$INSTALL_REF/install.sh" |
-            sh -s -- --ref "$INSTALL_REF" --prefix "$prefix"
+          curl -fsSL "https://raw.githubusercontent.com/HVHBIGNAME/anti-monitoring/$INSTALL_REF/antimon.sh" |
+            sh -s -- --install --ref "$INSTALL_REF" --prefix "$prefix"
           "$prefix/bin/antimon" --version
-          sh uninstall.sh --prefix "$prefix"
+          "$prefix/bin/antimon" --uninstall
 
   distributions:
     name: Native packages / ${{ matrix.target }}

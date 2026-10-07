@@ -114,7 +114,7 @@ def coverage(theme, ids):
         svg += f'<rect x="666" y="{y - 15}" width="{430 * len(group) / 9:.2f}" height="14" rx="3" fill="{color}"/>'
         svg += text(1151, y, len(group), fill=color, size=22, mono=True, anchor="end")
     svg += f'<path d="M32 301H1168" stroke="{p["line"]}"/>'
-    svg += text(35, 328, "SOURCE-DERIVED COUNTS / YOUR MACHINE IS MEASURED BY antimon scan --json", fill=p["muted"], size=14, mono=True)
+    svg += text(35, 328, "SOURCE-DERIVED COUNTS / YOUR MACHINE IS MEASURED BY antimon --scan --json", fill=p["muted"], size=14, mono=True)
     return svg + "\n</svg>\n"
 
 

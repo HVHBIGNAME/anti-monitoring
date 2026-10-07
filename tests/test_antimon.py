@@ -52,6 +52,7 @@ class Fixture(unittest.TestCase):
         self.write(self.library, source.removesuffix('main "$@"\n'))
         self.driver = self.root / "driver.sh"
         self.write(self.driver, f". {shlex.quote(shell_path(self.library))}\n"
+                   f"SCRIPT_FILE={shlex.quote(shell_path(REPO / 'antimon.sh'))}\n"
                    f"SYSTEM_ROOT={shlex.quote(shell_path(self.sysroot))}\n"
                    f"STATE_DIR={shlex.quote(shell_path(self.state_dir))}\n"
                    "has() { case \"$1\" in " + "|".join(MANAGED_TOOLS)
@@ -202,7 +203,12 @@ class CliTests(Fixture):
                  ("scan", "--lang", "xx"), ("scan", "--all", "--agents", "qemu"),
                  ("scan", "--agents", "qemu,"), ("scan", "--agents", "qemu;id"),
                  ("scan", "--agents", "missing"), ("remove", "--all", "--json"),
-                 ("scan", "--state-dir", "relative"), ("scan", "--snapshot", "../x")]
+                 ("scan", "--state-dir", "relative"), ("scan", "--snapshot", "../x"),
+                 ("--autostart",), ("--autostart", "--no-autostart"),
+                 ("--autostart", "--remove", "--all"), ("--run",),
+                 ("--uninstall", "--agents", "qemu"), ("--install", "--agents", "qemu"),
+                 ("--no-autostart", "--agents", "qemu"), ("--source", "/tmp"),
+                 ("--install", "--no-autostart"), ("--install", "--scan")]
         for args in cases:
             with self.subTest(args=args):
                 self.execute(*args, expected=2)
@@ -210,6 +216,20 @@ class CliTests(Fixture):
 
     def test_russian_language(self):
         self.assertIn("управление", self.execute("--lang", "ru", "--help").stdout)
+
+    def test_help_lists_unified_actions_and_boot_flags(self):
+        output = self.execute("--help").stdout
+        for flag in ("--install", "--uninstall", "--autostart", "--no-autostart", "--scan", "--disable", "--remove", "--restore", "--help"):
+            self.assertIn(flag, output)
+        self.assertIn("при загрузке", self.execute("--help", "--lang", "ru").stdout)
+
+    def test_action_flags_are_equivalent_to_legacy_subcommands(self):
+        self.add_qemu()
+        flagged = json.loads(self.execute("--scan", "--json", "--agents", "qemu").stdout)
+        legacy = json.loads(self.execute("scan", "--json", "--agents", "qemu").stdout)
+        self.assertEqual(flagged, legacy)
+        self.execute("--disable", "--agents", "qemu", "--dry-run")
+        self.assertFalse(self.mutations())
 
     def test_root_is_only_required_for_writes(self):
         self.add_qemu()
@@ -553,29 +573,158 @@ class BackendTests(Fixture):
         self.execute("disable", "--all", "--yes")
 
 
+class AutostartTests(Fixture):
+    def setUp(self):
+        super().setUp()
+        self.prefix = self.root / "installed tools"
+        self.execute("--install", "--prefix", shell_path(self.prefix))
+        self.add_qemu()
+
+    def boot_args(self, enable=True):
+        return ("--autostart" if enable else "--no-autostart", "--prefix", shell_path(self.prefix))
+
+    def test_autostart_is_off_by_default(self):
+        self.assertFalse((self.sysroot / "etc" / "systemd" / "system" / "anti-monitoring.service").exists())
+        self.assertFalse(self.mutations())
+
+    def test_systemd_registration_preserves_agents_until_next_boot(self):
+        self.execute(*self.boot_args(), "--agents", "qemu", "--yes")
+        unit = self.sysroot / "etc" / "systemd" / "system" / "anti-monitoring.service"
+        content = unit.read_text(encoding="utf-8")
+        self.assertIn('ExecStart="' + shell_path(self.prefix) + '/bin/antimon" --disable --agents qemu --yes', content)
+        self.assertIn("WantedBy=multi-user.target", content)
+        self.assertEqual(self.data["services"]["qemu-guest-agent"]["active"], "active")
+        self.assertEqual(self.data["services"]["anti-monitoring"]["startup"], "enabled")
+        self.assertFalse(any("start" in call["args"] or "--now" in call["args"] for call in self.mutations()))
+        self.execute(*self.boot_args(False))
+        self.assertFalse(unit.exists())
+        self.execute(*self.boot_args(False))
+
+    def test_install_and_autostart_compose(self):
+        target = self.root / "new-prefix"
+        self.execute("--install", "--autostart", "--agents", "qemu", "--prefix", shell_path(target), "--yes")
+        self.assertTrue((target / "bin" / "antimon").exists())
+        self.assertEqual(self.data["services"]["anti-monitoring"]["startup"], "enabled")
+
+    def test_autostart_requires_installed_command(self):
+        self.execute("--autostart", "--agents", "qemu", "--prefix", shell_path(self.root / "missing"), "--yes", expected=1)
+        self.assertFalse(self.mutations())
+
+    def test_preview_creates_no_boot_entry_or_snapshot(self):
+        self.execute(*self.boot_args(), "--all", "--dry-run")
+        self.assertFalse(self.state_dir.exists())
+        self.assertFalse(self.mutations())
+
+    def test_only_root_can_register_autostart(self):
+        self.data["uid"] = 1000
+        self.execute(*self.boot_args(), "--agents", "qemu", "--yes", expected=2)
+        self.assertFalse(self.mutations())
+
+    def test_uninstall_removes_owned_boot_entry_first(self):
+        self.execute(*self.boot_args(), "--agents", "qemu", "--yes")
+        self.execute("--uninstall", "--prefix", shell_path(self.prefix))
+        self.assertFalse((self.prefix / "bin" / "antimon").exists())
+        self.assertFalse((self.sysroot / "etc" / "systemd" / "system" / "anti-monitoring.service").exists())
+        self.assertEqual(self.data["services"]["qemu-guest-agent"]["active"], "active")
+
+    def test_foreign_boot_entry_is_never_replaced(self):
+        unit = self.sysroot / "etc" / "systemd" / "system" / "anti-monitoring.service"
+        unit.parent.mkdir(parents=True)
+        unit.write_text("my unit", encoding="utf-8")
+        self.execute(*self.boot_args(), "--agents", "qemu", "--yes", expected=2)
+        self.execute(*self.boot_args(False), expected=2)
+        self.assertEqual(unit.read_text(encoding="utf-8"), "my unit")
+
+    def test_registration_failure_is_not_success(self):
+        self.data["fail"] = "systemctl:enable"
+        self.execute(*self.boot_args(), "--agents", "qemu", "--yes", expected=1)
+        self.assertEqual(self.data["services"]["qemu-guest-agent"]["active"], "active")
+        self.assertFalse((self.state_dir / ".lock").exists())
+
+    def test_autostart_paths_cannot_inject_native_config(self):
+        for suffix in ("bad%path", "bad'path", "bad\npath", "bad$path"):
+            with self.subTest(suffix=suffix):
+                self.execute("--autostart", "--agents", "qemu", "--prefix", shell_path(self.root / suffix), "--yes", expected=2)
+        self.assertFalse(self.mutations())
+
+    def test_unsafe_binary_permissions_are_rejected(self):
+        self.data["unsafe_state_directory"] = True
+        self.execute(*self.boot_args(), "--all", "--yes", expected=2)
+        self.assertFalse(self.mutations())
+
+    def test_no_init_refuses_autostart(self):
+        self.set_init("none")
+        self.execute(*self.boot_args(), "--all", "--yes", expected=2)
+        self.assertFalse(self.mutations())
+
+    def test_openrc_boot_entry(self):
+        self.set_init("openrc")
+        self.execute(*self.boot_args(), "--agents", "qemu", "--yes")
+        entry = self.sysroot / "etc" / "init.d" / "anti-monitoring"
+        self.assertTrue(entry.read_text().startswith("#!/sbin/openrc-run"))
+        self.assertEqual(self.data["services"]["anti-monitoring"]["startup"], "default ")
+        self.execute(*self.boot_args(False))
+        self.assertFalse(entry.exists())
+
+    def test_sysv_boot_entry(self):
+        self.set_init("sysv")
+        self.execute(*self.boot_args(), "--all", "--yes")
+        entry = self.sysroot / "etc" / "init.d" / "anti-monitoring"
+        self.assertIn("# Default-Start:     2 3 4 5", entry.read_text())
+        self.execute(*self.boot_args(False))
+        self.assertFalse(entry.exists())
+
+    @unittest.skipIf(os.name == "nt", "native symlink fixture is exercised on Linux")
+    def test_sysv_update_rc_boot_registration(self):
+        self.set_init("sysv")
+        self.stub("update-rc.d")
+        self.execute(*self.boot_args(), "--all", "--yes")
+        self.assertTrue((self.sysroot / "etc" / "rc2.d" / "S99anti-monitoring").is_symlink())
+        self.execute(*self.boot_args(False))
+        self.assertFalse((self.sysroot / "etc" / "rc2.d" / "S99anti-monitoring").is_symlink())
+
+    @unittest.skipIf(os.name == "nt", "native symlink fixture is exercised on Linux")
+    def test_runit_boot_entry_skips_registration_boot(self):
+        self.set_init("runit")
+        boot_id = self.sysroot / "proc" / "sys" / "kernel" / "random" / "boot_id"
+        boot_id.parent.mkdir(parents=True)
+        boot_id.write_text("12345678-1234-1234-1234-123456789abc\n")
+        self.execute(*self.boot_args(), "--agents", "qemu", "--yes")
+        entry = self.sysroot / "etc" / "sv" / "anti-monitoring" / "run"
+        link = self.sysroot / "var" / "service" / "anti-monitoring"
+        self.assertTrue(link.is_symlink())
+        self.assertIn("12345678-1234-1234-1234-123456789abc", entry.read_text())
+        self.assertIn("exec sv down .", entry.read_text())
+        self.execute(*self.boot_args(False))
+        self.assertFalse(link.is_symlink())
+        self.assertTrue(entry.exists())
+        self.execute(*self.boot_args(), "--agents", "qemu", "--yes")
+        self.assertTrue(link.is_symlink())
+
+
 class InstallerTests(Fixture):
     def test_offline_install_and_uninstall_with_spaces(self):
         source = self.checkout()
         prefix = self.root / "my tools"
-        self.execute("--source", shell_path(source), "--prefix", shell_path(prefix), script=REPO / "install.sh")
+        self.execute("--install", "--source", shell_path(source), "--prefix", shell_path(prefix))
         installed = prefix / "bin" / "antimon"
         self.assertEqual(installed.read_bytes(), (REPO / "antimon.sh").read_bytes())
         self.execute("--version", script=installed)
-        self.execute("--prefix", shell_path(prefix), "--dry-run", script=REPO / "uninstall.sh")
+        self.execute("--uninstall", "--prefix", shell_path(prefix), "--dry-run")
         self.assertTrue(installed.exists())
-        self.execute("--prefix", shell_path(prefix), script=REPO / "uninstall.sh")
+        self.execute("--uninstall", "--prefix", shell_path(prefix))
         self.assertFalse(installed.exists())
         self.assertFalse(self.mutations())
 
     def test_bad_checksum_preserves_previous_installation(self):
         source = self.checkout()
         prefix = self.root / "prefix"
-        args = ("--source", shell_path(source), "--prefix", shell_path(prefix))
-        self.execute(*args, script=REPO / "install.sh")
+        args = ("--install", "--source", shell_path(source), "--prefix", shell_path(prefix))
+        self.execute(*args)
         installed = prefix / "bin" / "antimon"
         before = installed.read_bytes()
         (source / "antimon.sh").write_text("echo corrupted\n", encoding="ascii")
-        self.execute(*args, script=REPO / "install.sh", expected=1)
+        self.execute(*args, expected=1)
         self.assertEqual(installed.read_bytes(), before)
         self.assertFalse(list((prefix / "bin").glob(".antimon.*")))
 
@@ -585,21 +734,21 @@ class InstallerTests(Fixture):
         installed = prefix / "bin" / "antimon"
         installed.parent.mkdir(parents=True)
         installed.write_text("important user file", encoding="ascii")
-        self.execute("--source", shell_path(source), "--prefix", shell_path(prefix), script=REPO / "install.sh", expected=1)
-        self.execute("--prefix", shell_path(prefix), script=REPO / "uninstall.sh", expected=1)
+        self.execute("--install", "--source", shell_path(source), "--prefix", shell_path(prefix), expected=1)
+        self.execute("--uninstall", "--prefix", shell_path(prefix), expected=2)
         self.assertEqual(installed.read_text(encoding="ascii"), "important user file")
 
     def test_legacy_force_flag_only_installs(self):
         self.add_qemu()
         source = self.checkout()
-        self.execute("--source", shell_path(source), "--prefix", shell_path(self.root / "prefix"),
-                     "--silent", "--force", script=REPO / "install.sh")
+        self.execute("--install", "--source", shell_path(source), "--prefix", shell_path(self.root / "prefix"),
+                     "--silent", "--force")
         self.assertFalse(self.mutations())
 
     def test_download_resolves_and_uses_one_commit(self):
         self.stub("curl")
         self.data["download_source"] = str(self.checkout())
-        self.execute("--prefix", shell_path(self.root / "prefix"), script=REPO / "install.sh")
+        self.execute("--install", "--ref", "main", "--prefix", shell_path(self.root / "prefix"))
         calls = [call for call in self.data["calls"] if call["tool"] == "curl"]
         self.assertEqual(len(calls), 3)
         for call in calls[1:]:
@@ -611,12 +760,26 @@ class InstallerTests(Fixture):
         self.stub("curl")
         self.data["download_error"] = True
         prefix = self.root / "prefix"
-        self.execute("--prefix", shell_path(prefix), script=REPO / "install.sh", expected=1)
+        self.execute("--install", "--ref", "main", "--prefix", shell_path(prefix), expected=1)
         self.assertFalse((prefix / "bin" / "antimon").exists())
 
-    def test_no_bash_required_by_scripts(self):
-        for name in ("antimon.sh", "install.sh", "uninstall.sh"):
-            self.assertTrue((REPO / name).read_text(encoding="utf-8").startswith("#!/bin/sh\n"))
+    def test_one_posix_entry_point(self):
+        self.assertTrue((REPO / "antimon.sh").read_text(encoding="utf-8").startswith("#!/bin/sh\n"))
+        self.assertFalse((REPO / "install.sh").exists())
+        self.assertFalse((REPO / "uninstall.sh").exists())
+
+    def test_standalone_file_installs_without_network_or_manifest(self):
+        self.stub("curl")
+        self.data["download_error"] = True
+        prefix = self.root / "offline"
+        self.execute("--install", "--prefix", shell_path(prefix))
+        self.assertEqual((prefix / "bin" / "antimon").read_bytes(), (REPO / "antimon.sh").read_bytes())
+        self.assertFalse(any(call["tool"] == "curl" for call in self.data["calls"]))
+
+    def test_install_dry_run_creates_nothing(self):
+        prefix = self.root / "preview"
+        self.execute("--install", "--prefix", shell_path(prefix), "--dry-run")
+        self.assertFalse(prefix.exists())
 
 
 if __name__ == "__main__":

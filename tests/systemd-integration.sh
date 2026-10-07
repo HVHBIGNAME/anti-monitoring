@@ -8,7 +8,7 @@ root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd) || exit 1
 work=$(mktemp -d /tmp/antimon-systemd-test.XXXXXXXX) || exit 1
 unit=antimon-selftest-${work##*.}
 policy=$unit-policy
-prefix=/opt/$unit
+prefix=/root/$unit
 created=0
 policy_created=0
 prefix_created=0
@@ -16,7 +16,7 @@ prefix_created=0
 cleanup() {
     result=$?
     trap - 0
-    if [ "$policy_created" -eq 1 ]; then
+    if [ "$policy_created" -eq 1 ] && [ -f "/etc/systemd/system/$policy.service" ]; then
         systemctl stop "$policy.service" || result=1
         systemctl disable "$policy.service" || result=1
         rm -f "/etc/systemd/system/$policy.service" || result=1

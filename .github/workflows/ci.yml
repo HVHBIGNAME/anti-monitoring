@@ -1,0 +1,96 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  shell-contracts:
+    name: Shell / ${{ matrix.shell }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        shell: [dash, bash, "busybox ash"]
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+      - name: Install check tools
+        run: |
+          missing=()
+          command -v shellcheck >/dev/null || missing+=(shellcheck)
+          command -v busybox >/dev/null || missing+=(busybox)
+          if [ "${#missing[@]}" -gt 0 ]; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends "${missing[@]}"
+          fi
+      - name: ShellCheck
+        run: shellcheck -s sh antimon.sh tests/*.sh
+      - name: Stateful contracts and report validation
+        env:
+          ANTIMON_TEST_SHELL: ${{ matrix.shell }}
+        run: python3 -m unittest discover -s tests -v
+      - name: Verify generated files
+        run: |
+          python3 tools/checksums.py --check
+          python3 tools/generate_assets.py --check
+      - name: Smoke-test the published one-line installer at this commit
+        if: matrix.shell == 'dash'
+        env:
+          INSTALL_REF: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -o pipefail
+          prefix="$RUNNER_TEMP/antimon-network-install"
+          curl -fsSL "https://raw.githubusercontent.com/HVHBIGNAME/anti-monitoring/$INSTALL_REF/antimon.sh" |
+            sh -s -- --install --ref "$INSTALL_REF" --prefix "$prefix"
+          "$prefix/bin/antimon" --version
+          "$prefix/bin/antimon" --uninstall
+
+  distributions:
+    name: Native packages / ${{ matrix.target }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [debian12, debian13, ubuntu22, ubuntu24, fedora, rocky, opensuse, arch, alpine, void]
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Real scan, installation and package removal in disposable container
+        env:
+          TARGET: ${{ matrix.target }}
+        run: python3 tests/run_containers.py --only "$TARGET" --jobs 1
+      - name: Upload native test evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-${{ matrix.target }}
+          path: reports/containers/
+          if-no-files-found: error
+          retention-days: 14
+
+  live-systemd:
+    name: Live systemd round trip
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Preview, disable, repeat, restore and clean up isolated unit
+        run: sudo sh tests/systemd-integration.sh

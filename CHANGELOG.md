@@ -1,0 +1,42 @@
+# Changelog
+
+## 2.0.0
+
+### Commands and behavior
+
+- One user-facing script: installation, uninstallation and actions use flags in `antimon.sh`.
+- Optional `--autostart` / `--no-autostart` for disabling selected agents at Linux boot.
+- Concise README; complete English/Russian `--help` and advanced usage documentation.
+- POSIX sh runtime; no Bash-specific arrays, `[[ ... ]]`, `echo -e` or `$EUID`.
+- Read-only scan, JSON reports, explicit agent selection, menu, dry-run and restore.
+- Package inventory uses exact names and installed status, including Debian multiarch.
+- Enabled-but-inactive services are handled; systemd aliases are deduplicated.
+- Backends: APT, RPM, pacman, APK, XBPS, Amazon SSM Snap; systemd, OpenRC, runit, SysV.
+- PID 1 is checked so installed service-management tools in a container do not imply a running init.
+- Package dependency preflight, verified postconditions, nonzero failure codes and root-only journals.
+- Reversible service state snapshots and a lock against concurrent operations.
+
+### Installation
+
+- Visible `antimon` command in a standard `bin` directory, root/user/custom prefix.
+- Commit-resolved downloads, SHA-256 manifest, syntax check, atomic replacement.
+- Self-installation from a standalone file, verified checkout/network install, explicit `--run`, downloader timeouts.
+- `--uninstall` removes owned boot registration, preserves recovery state and supports `--legacy`.
+
+### Breaking changes from v1
+
+- Installing no longer removes agents. `--force` confirms an explicit action only.
+- Broad recursive deletion of vendor directories, crash reports and logs was removed.
+- Process-name killing, unconditional `SIGKILL` and unverified vendor uninstallers were removed.
+- Blanket APT holds and removal of Ubuntu Pro/shared system packages were removed.
+- v1 could leave APT holds and systemd masks behind. v2 does not guess their ownership;
+  the upgrade notes in `docs/USAGE.md` list the explicit cleanup commands.
+- `restore` restores recorded service states; it does not reinstall packages or recover v1 deletions.
+
+### Documentation and validation
+
+- Accurate guest/hypervisor scope, dependency and provisioning consequences.
+- Autostart prerequisites: a root-owned system installation; user-prefix installs are rejected for boot registration.
+- Dark/light README assets matching the author's profile; catalog counts generated from source.
+- Local SVG report renderer for actual JSON scans.
+- Stateful shell tests, live systemd fixture, disposable-container package integration and CI.

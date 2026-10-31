@@ -29,11 +29,14 @@
 - Broad recursive deletion of vendor directories, crash reports and logs was removed.
 - Process-name killing, unconditional `SIGKILL` and unverified vendor uninstallers were removed.
 - Blanket APT holds and removal of Ubuntu Pro/shared system packages were removed.
+- v1 could leave APT holds and systemd masks behind. v2 does not guess their ownership;
+  the upgrade notes in `docs/USAGE.md` list the explicit cleanup commands.
 - `restore` restores recorded service states; it does not reinstall packages or recover v1 deletions.
 
 ### Documentation and validation
 
 - Accurate guest/hypervisor scope, dependency and provisioning consequences.
+- Autostart prerequisites: a root-owned system installation; user-prefix installs are rejected for boot registration.
 - Dark/light README assets matching the author's profile; catalog counts generated from source.
 - Local SVG report renderer for actual JSON scans.
 - Stateful shell tests, live systemd fixture, disposable-container package integration and CI.

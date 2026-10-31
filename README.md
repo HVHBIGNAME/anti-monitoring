@@ -60,6 +60,8 @@ sudo antimon --no-autostart
 sudo sh antimon.sh --install --autostart --agents qemu --yes
 ```
 
+Автозапуск — системная служба: нужен root-owned префикс (`/usr/local` или свой системный). Установка в `~/.local` для автостарта не подходит.
+
 Linux: APT, RPM, pacman, APK, XBPS · systemd, OpenRC, runit, SysV.
 Отключение агентов может повлиять на функции VM; доступ к гипервизору оно не блокирует.
 

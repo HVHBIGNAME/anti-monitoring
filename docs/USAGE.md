@@ -24,6 +24,9 @@ sudo antimon --uninstall
 
 Root defaults to `/usr/local/bin/antimon`; a normal user to `~/.local/bin/antimon`.
 An installed command recognizes its own prefix. `--prefix DIR` overrides this.
+Autostart is a system-wide root service: install it from a root-owned prefix
+(root default `/usr/local`, or `--prefix /usr/local` under sudo). A `~/.local`
+install cannot register a boot entry.
 Downloads require curl/wget with trusted HTTPS and sha256sum/shasum/openssl.
 Network installation resolves one commit and checks its SHA-256 manifest and shell
 syntax before atomic replacement. Local standalone installation copies the file
@@ -33,6 +36,25 @@ Use `--quiet` for reduced installer output. `--legacy` with `--uninstall` remove
 the recognized v1 command from the invoking HOME's `~/.cache/system/.antimon`.
 Uninstall removes this prefix's autostart registration, but preserves guest-agent
 states and recovery snapshots. It does not restore files deleted by v1.
+
+v1 could also leave APT holds and systemd masks behind. After upgrading, run this
+as the account that installed v1 (often root, so `$HOME` is `/root`) and clear them
+for the agents you used:
+
+```sh
+if command -v apt-mark >/dev/null; then
+    apt-mark unhold qemu-guest-agent cloud-init amazon-cloudwatch-agent \
+        amazon-ssm-agent google-guest-agent walinuxagent digitalocean-agent \
+        vultr-guest-agent 2>/dev/null || true
+fi
+for unit in qemu-guest-agent cloud-init cloud-config cloud-final cloud-init-local \
+    vmtoolsd vmware-tools vboxadd vboxadd-service hv-kvp-daemon hv-vss-daemon \
+    hv-fcopy-daemon awslogs google-guest-agent google-osconfig-agent walinuxagent \
+    digitalocean-agent vultr-guest-agent hcloud-init linode-agent apport; do
+    systemctl unmask "$unit" 2>/dev/null || true
+done
+rm -f "$HOME/.cache/system/.antimon"
+```
 
 ## Autostart
 
@@ -46,6 +68,10 @@ Autostart runs **once per boot**, using `--disable --yes` with your agent select
 language and `--state-dir`. It does not run package removal. Registering it does not
 immediately change guest agents; `--disable` is the explicit action for that.
 `--run` is different: it opens the menu immediately after installing.
+
+Register autostart from a system-wide, root-owned installation. A `~/.local`
+prefix cannot become a root boot command: run `sudo sh antimon.sh --install --autostart ...`
+(or install with `--prefix /usr/local` first), then use `sudo antimon --autostart`.
 
 Native entries are generated for the running init:
 

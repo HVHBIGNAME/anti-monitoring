@@ -48,6 +48,7 @@ sudo antimon --uninstall
 
 Autostart is **off by default** and runs `--disable` for the selected agents at boot.
 Combine `--install --autostart --agents qemu --yes` to install and register it at once.
+Autostart needs a system-wide, root-owned install; a `~/.local` prefix cannot register a boot entry.
 Guest-agent changes may affect VM integration; they cannot block hypervisor access.
 
 [Advanced options and local reports](USAGE.md) · [Validation](COMPATIBILITY.md)
